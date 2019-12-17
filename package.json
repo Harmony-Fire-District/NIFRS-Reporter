@@ -1,0 +1,13 @@
+{
+  "name": "HFD",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "test": "echo \"No tests yet...\""
+  },
+  "dependencies": {
+    "node-html-parser": "^1.1.16",
+    "request": "^2.88.0"
+  },
+  "devDependencies": {}
+}

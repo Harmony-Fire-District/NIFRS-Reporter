@@ -1,0 +1,10 @@
+{
+  "bindings": [
+    {
+      "name": "MonthlyExecutionTimer",
+      "type": "timerTrigger",
+      "direction": "in",
+      "schedule": "0 0 2 1 * *"
+    }
+  ]
+}
