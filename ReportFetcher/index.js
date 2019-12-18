@@ -1,7 +1,7 @@
 const request = require('request-promise');
 const parser = require('node-html-parser');
 const dateformat = require('dateformat');
-const mailer = require('nodemailer');
+const sendgrid = require('@sendgrid/mail');
 
 const SHORT_FORMAT = 'm/d/yyyy';
 const LONG_FORMAT = 'yyyy-mm-dd-HH-MM-ss'
@@ -23,25 +23,25 @@ module.exports = async function (context, myTimer) {
 
         /**
          *  Send the authentication request.
-         */    
-        }).then(function (body) {
+         */
+    }).then(function (body) {
 
-            var state = body.querySelector('#__VIEWSTATE').attributes.value;
-            var valid = body.querySelector('#__EVENTVALIDATION').attributes.value;
+        var state = body.querySelector('#__VIEWSTATE').attributes.value;
+        var valid = body.querySelector('#__EVENTVALIDATION').attributes.value;
 
-            return request.post({
-                url: 'http://fire.ecm2.us/Login.aspx',
-                followAllRedirects: true,
-                jar: true,
-                form: {
-                    __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
-                    __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
-                    ctl00$ContentPlaceHolder1$Login1$UserName: process.env['ECMUsername'],
-                    ctl00$ContentPlaceHolder1$Login1$Password: process.env['ECMPassword'],
-                    ctl00$ContentPlaceHolder1$Login1$RadButton1: 'Log In'
-                }
-            })
+        return request.post({
+            url: 'http://fire.ecm2.us/Login.aspx',
+            followAllRedirects: true,
+            jar: true,
+            form: {
+                __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
+                __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
+                ctl00$ContentPlaceHolder1$Login1$UserName: process.env['ECM2_USERNAME'],
+                ctl00$ContentPlaceHolder1$Login1$Password: process.env['ECM2_PASSWORD'],
+                ctl00$ContentPlaceHolder1$Login1$RadButton1: 'Log In'
+            }
         })
+    })
 
         /**
          * Load the report export page to obtain form data values.
@@ -60,26 +60,26 @@ module.exports = async function (context, myTimer) {
          * Send a report request with last months first and last days.
          */
         .then(function (body) {
-            
+
             var today = new Date();
 
             var fromState = {
                 enabled: true,
                 emptyMessage: "",
-                validationText: getLongFormat(startDate),
-                valueAsString: getLongFormat(startDate),
-                minDateStr:"1980-01-01-00-00-00",
-                maxDateStr:"2099-12-31-00-00-00",
+                validationText: getLongDateFormat(startDate),
+                valueAsString: getLongDateFormat(startDate),
+                minDateStr: "1980-01-01-00-00-00",
+                maxDateStr: "2099-12-31-00-00-00",
                 lastSetTextBoxValue: getShortDateFormat(startDate)
             }
 
             var toState = {
                 enabled: true,
                 emptyMessage: "",
-                validationText: getLongFormat(endDate),
-                valueAsString: getLongFormat(endDate),
-                minDateStr:"1980-01-01-00-00-00",
-                maxDateStr:"2099-12-31-00-00-00",
+                validationText: getLongDateFormat(endDate),
+                valueAsString: getLongDateFormat(endDate),
+                minDateStr: "1980-01-01-00-00-00",
+                maxDateStr: "2099-12-31-00-00-00",
                 lastSetTextBoxValue: getShortDateFormat(endDate)
             }
 
@@ -94,13 +94,17 @@ module.exports = async function (context, myTimer) {
                     ctl00_ctl00_ContentPlaceHolder1_CustomerBody_RadDatePicker1_dateInput_ClientState: JSON.stringify(fromState),
                     ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker2$dateInput: getShortDateFormat(endDate),
                     ctl00_ctl00_ContentPlaceHolder1_CustomerBody_RadDatePicker2_dateInput_ClientState: JSON.stringify(toState),
-                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton1: 'Create Export'               
+                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton1: 'Create Export'
                 },
                 transform: function (body) {
                     return parser.parse(body);
                 }
             });
         })
+
+        /**
+         * Download the report.
+         */
         .then(function (body) {
 
             var error = body.querySelector('#ContentPlaceHolder1_CustomerBody_errorLabel');
@@ -109,7 +113,7 @@ module.exports = async function (context, myTimer) {
                 return Promise.reject(`There are no incidents to export for ${getShortDateFormat(startDate)} -> ${getShortDateFormat(endDate)}`)
             } else {
                 return request.post({
-                    url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',            
+                    url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',
                     followAllRedirects: true,
                     jar: true,
                     form: {
@@ -121,16 +125,23 @@ module.exports = async function (context, myTimer) {
                 });
             }
         })
-        .then(function(response) {
-            console.log(response);
+
+        /**
+         * Email the report.
+         */
+        .then(function (report) {
+            return sendEmail(createReportEmail(report));
+        })
+        .then(function() {
+            var reportDate = getLastMonthFirstDay(new Date());
+            notifySlack(slackSuccessNotification(`NFIRS Report for ${dateformat(reportDate, 'mmmyyyy')} has been sent successfully!`))
         })
         .catch(function (error) {
-            notifySlack({
-                text: error
-            }).catch(function(error) {
-                context.log.error(error);
-            })
-        })
+            notifySlack(slackErrorNotification(error))
+                .catch(function (error) {
+                    context.log.error(error);
+                });
+        });
 };
 
 function getLastMonthFirstDay(date) {
@@ -145,13 +156,105 @@ function getShortDateFormat(date) {
     return dateformat(date, SHORT_FORMAT);
 }
 
-function getLongFormat(date) {
+function getLongDateFormat(date) {
     return dateformat(date, LONG_FORMAT);
 }
 
 function notifySlack(data) {
     return request.post({
-        url: process.env['SlackWebhookURL'],
+        url: process.env['SLACK_NOTIFICATION_WEBHOOK_URL'],
         json: data
     });
 }
+
+function slackErrorNotification(message) {
+    return {
+        blocks: [
+            {
+                type: 'context',
+                elements: [
+                    {
+                        type: 'image',
+                        image_url: 'https://api.slack.com/img/blocks/bkb_template_images/notificationsWarningIcon.png',
+                        alt_text: 'Notification warning icon'
+                    },
+                    {
+                        type: 'mrkdwn',
+                        text: '*There was a problem running the NFIRS Report!*'
+                    }
+                ]
+            },
+            {
+                type: 'section',
+                text: {
+                    type: 'plain_text',
+                    emoji: true,
+                    text: message
+                }
+            }
+        ]
+    }
+}
+
+function slackSuccessNotification(message) {
+    //http://fire.ecm2.us/Customers/ExportPages/DownloadExport.aspx
+    return {
+        blocks: [
+            {
+                type: 'context',
+                elements: [
+                    {
+                        type: 'image',
+                        image_url: 'https://api.slack.com/img/blocks/bkb_template_images/notificationsWarningIcon.png',
+                        alt_text: 'Notification warning icon'
+                    },
+                    {
+                        type: 'mrkdwn',
+                        text: '*There was a problem running the NFIRS Report!*'
+                    }
+                ]
+            },
+            {
+                type: 'section',
+                text: {
+                    type: 'plain_text',
+                    emoji: true,
+                    text: message
+                }
+            }
+    ]};
+}
+
+function sendEmail(email) {
+    return new Promise(function(resolve, reject) {
+        sendgrid.setApiKey(process.env['SENDGRID_API_KEY']);
+        sendgrid.send(email, function(error, json) {
+            if (error) {
+                reject(`Failed to send NFIRS email: ${error}`);
+            } else {
+                resolve();
+            }
+        });
+    });
+}
+
+function createReportEmail(report) {
+    var reportDate = getLastMonthFirstDay(new Date());
+    // var bcc = process.env['REPORT_RECIPIENTS_BCC'].split(',');
+    return {
+        to: process.env['REPORT_RECIPIENT'],
+        // bcc: bcc,
+        from: 'no-reply@harmonyfire22.org',
+        subject: `Harmony Fire District - NFIRS Report for ${dateformat(reportDate, 'mmmm yyyy')}`,
+        text: 'Test Email',
+        attachments: [
+            {
+                filename: `HFD-NFIRS-${dateformat(reportDate, 'mmmyyyy')}.txt`,
+                content: Buffer.from(report).toString('base64'),
+                type: 'plain/text',
+                disposition: 'attachment'
+            }
+        ]
+    }
+}
+
