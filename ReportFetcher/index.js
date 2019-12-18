@@ -2,6 +2,8 @@ const request = require('request-promise');
 const parser = require('node-html-parser');
 const dateformat = require('dateformat');
 const sendgrid = require('@sendgrid/mail');
+const fs = require('fs');
+const path = require('path');
 
 const SHORT_FORMAT = 'm/d/yyyy';
 const LONG_FORMAT = 'yyyy-mm-dd-HH-MM-ss'
@@ -134,7 +136,7 @@ module.exports = async function (context, myTimer) {
         })
         .then(function() {
             var reportDate = getLastMonthFirstDay(new Date());
-            notifySlack(slackSuccessNotification(`NFIRS Report for ${dateformat(reportDate, 'mmmyyyy')} has been sent successfully!`))
+            notifySlack(slackSuccessNotification(`NFIRS Report for ${dateformat(reportDate, 'mmmm yyyy')} has been sent successfully!`))
         })
         .catch(function (error) {
             notifySlack(slackErrorNotification(error))
@@ -197,23 +199,8 @@ function slackErrorNotification(message) {
 }
 
 function slackSuccessNotification(message) {
-    //http://fire.ecm2.us/Customers/ExportPages/DownloadExport.aspx
     return {
         blocks: [
-            {
-                type: 'context',
-                elements: [
-                    {
-                        type: 'image',
-                        image_url: 'https://api.slack.com/img/blocks/bkb_template_images/notificationsWarningIcon.png',
-                        alt_text: 'Notification warning icon'
-                    },
-                    {
-                        type: 'mrkdwn',
-                        text: '*There was a problem running the NFIRS Report!*'
-                    }
-                ]
-            },
             {
                 type: 'section',
                 text: {
@@ -240,13 +227,13 @@ function sendEmail(email) {
 
 function createReportEmail(report) {
     var reportDate = getLastMonthFirstDay(new Date());
-    // var bcc = process.env['REPORT_RECIPIENTS_BCC'].split(',');
-    return {
+    var email = {
         to: process.env['REPORT_RECIPIENT'],
-        // bcc: bcc,
         from: 'no-reply@harmonyfire22.org',
         subject: `Harmony Fire District - NFIRS Report for ${dateformat(reportDate, 'mmmm yyyy')}`,
-        text: 'Test Email',
+        html: getEmailTemplate({
+            date: dateformat(reportDate, 'mmmm yyyy')
+        }),
         attachments: [
             {
                 filename: `HFD-NFIRS-${dateformat(reportDate, 'mmmyyyy')}.txt`,
@@ -256,5 +243,24 @@ function createReportEmail(report) {
             }
         ]
     }
+
+    var cc = process.env['REPORT_RECIPIENTS_CC'];
+    if (cc) {
+        email['cc'] = cc.split(',');
+    }
+
+    var bcc = process.env['REPORT_RECIPIENTS_BCC'];
+    if (bcc) {
+        email['bcc'] = bcc.split(',');
+    }
+
+    return email;
 }
 
+function getEmailTemplate(context) {
+    return fs.readFileSync(path.join(__dirname, '/email-template.html'), {
+        encoding: 'utf-8'
+    })
+    .replace('{DATE}', context.date)
+    .replace('{SUPPORT_EMAIL}', process.env['SUPPORT_EMAIL']);
+}
