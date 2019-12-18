@@ -35,6 +35,7 @@ module.exports = async function (context, myTimer) {
             url: 'http://fire.ecm2.us/Login.aspx',
             followAllRedirects: true,
             jar: true,
+            resolveWithFullResponse: true,
             form: {
                 __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
                 __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
@@ -45,46 +46,82 @@ module.exports = async function (context, myTimer) {
         })
     })
 
-        /**
-         * Load the report export page to obtain form data values.
-         */
-        .then(function (body) {
-            return request.get({
-                url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',
-                jar: true,
-                transform: function (body) {
-                    return parser.parse(body);
-                }
-            })
+    /**
+     * Load the report export page to obtain form data values.
+     * This section also checks if we had any authentication problems. Since ECM2 will return an HTTP 200 for failed login attempts, and there are no
+     * good HTML tags to key off of; we check if we were redirected to the CustomerHome page.
+     */
+    .then(function (response) {
+
+        if (!('/Customers/CustomerHome.aspx' == response.req.path)) {
+            return Promise.reject('Authentication into ECM2 failed. ECM2 could be down, or the credentials could be wrong.');
+        }
+
+        return request.get({
+            url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',
+            jar: true,
+            transform: function (body) {
+                return parser.parse(body);
+            }
         })
+    })
 
-        /**
-         * Send a report request with last months first and last days.
-         */
-        .then(function (body) {
+    /**
+     * Send a report request with last months first and last days.
+     */
+    .then(function (body) {
 
-            var today = new Date();
+        var today = new Date();
 
-            var fromState = {
-                enabled: true,
-                emptyMessage: "",
-                validationText: getLongDateFormat(startDate),
-                valueAsString: getLongDateFormat(startDate),
-                minDateStr: "1980-01-01-00-00-00",
-                maxDateStr: "2099-12-31-00-00-00",
-                lastSetTextBoxValue: getShortDateFormat(startDate)
+        var fromState = {
+            enabled: true,
+            emptyMessage: "",
+            validationText: getLongDateFormat(startDate),
+            valueAsString: getLongDateFormat(startDate),
+            minDateStr: "1980-01-01-00-00-00",
+            maxDateStr: "2099-12-31-00-00-00",
+            lastSetTextBoxValue: getShortDateFormat(startDate)
+        }
+
+        var toState = {
+            enabled: true,
+            emptyMessage: "",
+            validationText: getLongDateFormat(endDate),
+            valueAsString: getLongDateFormat(endDate),
+            minDateStr: "1980-01-01-00-00-00",
+            maxDateStr: "2099-12-31-00-00-00",
+            lastSetTextBoxValue: getShortDateFormat(endDate)
+        }
+
+        return request.post({
+            url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',
+            followAllRedirects: true,
+            jar: true,
+            form: {
+                __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
+                __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
+                ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker1$dateInput: getShortDateFormat(startDate),
+                ctl00_ctl00_ContentPlaceHolder1_CustomerBody_RadDatePicker1_dateInput_ClientState: JSON.stringify(fromState),
+                ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker2$dateInput: getShortDateFormat(endDate),
+                ctl00_ctl00_ContentPlaceHolder1_CustomerBody_RadDatePicker2_dateInput_ClientState: JSON.stringify(toState),
+                ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton1: 'Create Export'
+            },
+            transform: function (body) {
+                return parser.parse(body);
             }
+        });
+    })
 
-            var toState = {
-                enabled: true,
-                emptyMessage: "",
-                validationText: getLongDateFormat(endDate),
-                valueAsString: getLongDateFormat(endDate),
-                minDateStr: "1980-01-01-00-00-00",
-                maxDateStr: "2099-12-31-00-00-00",
-                lastSetTextBoxValue: getShortDateFormat(endDate)
-            }
+    /**
+     * Download the report.
+     */
+    .then(function (body) {
 
+        var error = body.querySelector('#ContentPlaceHolder1_CustomerBody_errorLabel');
+
+        if (error && error.text == 'No incidents to export') {
+            return Promise.reject(`There are no incidents to export for ${getShortDateFormat(startDate)} -> ${getShortDateFormat(endDate)}`)
+        } else {
             return request.post({
                 url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',
                 followAllRedirects: true,
@@ -92,58 +129,29 @@ module.exports = async function (context, myTimer) {
                 form: {
                     __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
                     __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
-                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker1$dateInput: getShortDateFormat(startDate),
-                    ctl00_ctl00_ContentPlaceHolder1_CustomerBody_RadDatePicker1_dateInput_ClientState: JSON.stringify(fromState),
-                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker2$dateInput: getShortDateFormat(endDate),
-                    ctl00_ctl00_ContentPlaceHolder1_CustomerBody_RadDatePicker2_dateInput_ClientState: JSON.stringify(toState),
-                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton1: 'Create Export'
-                },
-                transform: function (body) {
-                    return parser.parse(body);
+                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton2: 'Download Export File',
+                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$Label1: body.querySelector('#ContentPlaceHolder1_CustomerBody_Label1').attributes.value
                 }
             });
-        })
+        }
+    })
 
-        /**
-         * Download the report.
-         */
-        .then(function (body) {
-
-            var error = body.querySelector('#ContentPlaceHolder1_CustomerBody_errorLabel');
-
-            if (error && error.text == 'No incidents to export') {
-                return Promise.reject(`There are no incidents to export for ${getShortDateFormat(startDate)} -> ${getShortDateFormat(endDate)}`)
-            } else {
-                return request.post({
-                    url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',
-                    followAllRedirects: true,
-                    jar: true,
-                    form: {
-                        __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
-                        __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
-                        ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton2: 'Download Export File',
-                        ctl00$ctl00$ContentPlaceHolder1$CustomerBody$Label1: body.querySelector('#ContentPlaceHolder1_CustomerBody_Label1').attributes.value
-                    }
-                });
-            }
-        })
-
-        /**
-         * Email the report.
-         */
-        .then(function (report) {
-            return sendEmail(createReportEmail(report));
-        })
-        .then(function() {
-            var reportDate = getLastMonthFirstDay(new Date());
-            notifySlack(slackSuccessNotification(`NFIRS Report for ${dateformat(reportDate, 'mmmm yyyy')} has been sent successfully!`))
-        })
-        .catch(function (error) {
-            notifySlack(slackErrorNotification(error))
-                .catch(function (error) {
-                    context.log.error(error);
-                });
-        });
+    /**
+     * Email the report.
+     */
+    .then(function (report) {
+        return sendEmail(createReportEmail(report));
+    })
+    .then(function () {
+        var reportDate = getLastMonthFirstDay(new Date());
+        notifySlack(slackSuccessNotification(`NFIRS Report for ${dateformat(reportDate, 'mmmm yyyy')} has been sent successfully!`))
+    })
+    .catch(function (error) {
+        notifySlack(slackErrorNotification(error))
+            .catch(function (error) {
+                context.log.error(error);
+            });
+    });
 };
 
 function getLastMonthFirstDay(date) {
@@ -209,13 +217,14 @@ function slackSuccessNotification(message) {
                     text: message
                 }
             }
-    ]};
+        ]
+    };
 }
 
 function sendEmail(email) {
-    return new Promise(function(resolve, reject) {
+    return new Promise(function (resolve, reject) {
         sendgrid.setApiKey(process.env['SENDGRID_API_KEY']);
-        sendgrid.send(email, function(error, json) {
+        sendgrid.send(email, function (error, json) {
             if (error) {
                 reject(`Failed to send NFIRS email: ${error}`);
             } else {
@@ -261,6 +270,6 @@ function getEmailTemplate(context) {
     return fs.readFileSync(path.join(__dirname, '/email-template.html'), {
         encoding: 'utf-8'
     })
-    .replace('{DATE}', context.date)
-    .replace('{SUPPORT_EMAIL}', process.env['SUPPORT_EMAIL']);
+        .replace('{DATE}', context.date)
+        .replace('{SUPPORT_EMAIL}', process.env['SUPPORT_EMAIL']);
 }
