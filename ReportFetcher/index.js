@@ -1,14 +1,16 @@
 const request = require('request-promise');
 const parser = require('node-html-parser');
 const dateformat = require('dateformat');
+const mailer = require('nodemailer');
 
 const SHORT_FORMAT = 'm/d/yyyy';
 const LONG_FORMAT = 'yyyy-mm-dd-HH-MM-ss'
 
 module.exports = async function (context, myTimer) {
 
-    var username = 'HFD';
-    var password = 'Road22house@';
+    var today = new Date();
+    var startDate = getLastMonthFirstDay(today);
+    var endDate = getLastMonthLastDay(today);
 
     /**
      * Load the login page to obtain form data values.
@@ -34,8 +36,8 @@ module.exports = async function (context, myTimer) {
                 form: {
                     __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
                     __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
-                    ctl00$ContentPlaceHolder1$Login1$UserName: username,
-                    ctl00$ContentPlaceHolder1$Login1$Password: password,
+                    ctl00$ContentPlaceHolder1$Login1$UserName: process.env['ECMUsername'],
+                    ctl00$ContentPlaceHolder1$Login1$Password: process.env['ECMPassword'],
                     ctl00$ContentPlaceHolder1$Login1$RadButton1: 'Log In'
                 }
             })
@@ -64,24 +66,22 @@ module.exports = async function (context, myTimer) {
             var fromState = {
                 enabled: true,
                 emptyMessage: "",
-                validationText: getLongFormat(getLastMonthFirstDay(today)),
-                valueAsString: getLongFormat(getLastMonthFirstDay(today)),
+                validationText: getLongFormat(startDate),
+                valueAsString: getLongFormat(startDate),
                 minDateStr:"1980-01-01-00-00-00",
                 maxDateStr:"2099-12-31-00-00-00",
-                lastSetTextBoxValue: getShortDateFormat(getLastMonthFirstDay(today))
+                lastSetTextBoxValue: getShortDateFormat(startDate)
             }
 
             var toState = {
                 enabled: true,
                 emptyMessage: "",
-                validationText: getLongFormat(getLastMonthLastDay(today)),
-                valueAsString: getLongFormat(getLastMonthLastDay(today)),
+                validationText: getLongFormat(endDate),
+                valueAsString: getLongFormat(endDate),
                 minDateStr:"1980-01-01-00-00-00",
                 maxDateStr:"2099-12-31-00-00-00",
-                lastSetTextBoxValue: getShortDateFormat(getLastMonthLastDay(today))
+                lastSetTextBoxValue: getShortDateFormat(endDate)
             }
-
-            var fromJson = JSON.stringify(fromState);
 
             return request.post({
                 url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',
@@ -90,9 +90,9 @@ module.exports = async function (context, myTimer) {
                 form: {
                     __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
                     __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
-                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker1$dateInput: getShortDateFormat(getLastMonthFirstDay(today)),
+                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker1$dateInput: getShortDateFormat(startDate),
                     ctl00_ctl00_ContentPlaceHolder1_CustomerBody_RadDatePicker1_dateInput_ClientState: JSON.stringify(fromState),
-                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker2$dateInput: getShortDateFormat(getLastMonthLastDay(today)),
+                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadDatePicker2$dateInput: getShortDateFormat(endDate),
                     ctl00_ctl00_ContentPlaceHolder1_CustomerBody_RadDatePicker2_dateInput_ClientState: JSON.stringify(toState),
                     ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton1: 'Create Export'               
                 },
@@ -102,23 +102,34 @@ module.exports = async function (context, myTimer) {
             });
         })
         .then(function (body) {
-            return request.post({
-                url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',            
-                followAllRedirects: true,
-                jar: true,
-                form: {
-                    __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
-                    __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
-                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton2: 'Download Export File',
-                    ctl00$ctl00$ContentPlaceHolder1$CustomerBody$Label1: body.querySelector('#ContentPlaceHolder1_CustomerBody_Label1').attributes.value
-                }
-            });
+
+            var error = body.querySelector('#ContentPlaceHolder1_CustomerBody_errorLabel');
+
+            if (error && error.text == 'No incidents to export') {
+                return Promise.reject(`There are no incidents to export for ${getShortDateFormat(startDate)} -> ${getShortDateFormat(endDate)}`)
+            } else {
+                return request.post({
+                    url: 'http://fire.ecm2.us/Customers/ExportPages/CreateExport.aspx',            
+                    followAllRedirects: true,
+                    jar: true,
+                    form: {
+                        __VIEWSTATE: body.querySelector('#__VIEWSTATE').attributes.value,
+                        __EVENTVALIDATION: body.querySelector('#__EVENTVALIDATION').attributes.value,
+                        ctl00$ctl00$ContentPlaceHolder1$CustomerBody$RadButton2: 'Download Export File',
+                        ctl00$ctl00$ContentPlaceHolder1$CustomerBody$Label1: body.querySelector('#ContentPlaceHolder1_CustomerBody_Label1').attributes.value
+                    }
+                });
+            }
         })
         .then(function(response) {
             console.log(response);
         })
         .catch(function (error) {
-            console.log(error);
+            notifySlack({
+                text: error
+            }).catch(function(error) {
+                context.log.error(error);
+            })
         })
 };
 
@@ -130,30 +141,17 @@ function getLastMonthLastDay(date) {
     return new Date(date.getFullYear(), date.getMonth(), 0);
 }
 
-/**
- * Provides a DateTime in the correct format, and month adjusted from zero base.
- * @param {Date} date 
- */
-function getFormattedDate(date) {
-    return (date.getMonth() + 1) + '/' + date.getDate() + '/' + date.getFullYear();
-}
-
-/**
- * Parses out the forms input elements for use during a post request.
- */
-function parseInputFormData(body) {
-    var inputs = body.querySelectorAll('input');
-    var formData = {};
-    body.querySelectorAll('input').forEach(function(item, index) {
-        formData[item.attributes.name] = item.attributes.value;
-    });
-    return formData;
-}
-
 function getShortDateFormat(date) {
     return dateformat(date, SHORT_FORMAT);
 }
 
 function getLongFormat(date) {
     return dateformat(date, LONG_FORMAT);
+}
+
+function notifySlack(data) {
+    return request.post({
+        url: process.env['SlackWebhookURL'],
+        json: data
+    });
 }
