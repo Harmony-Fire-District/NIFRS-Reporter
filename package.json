@@ -9,7 +9,7 @@
     "@sendgrid/mail": "^6.4.0",
     "dateformat": "^3.0.3",
     "node-html-parser": "^1.1.16",
-    "nodemailer": "^6.4.2",
+    "nodemailer": "^6.4.16",
     "request": "^2.88.0",
     "request-promise": "^4.2.5"
   },
